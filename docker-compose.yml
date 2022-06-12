@@ -1,0 +1,98 @@
+version: "3"
+
+volumes:
+  owncloud:
+    driver: local
+  mariadb:
+    driver: local
+
+services:
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:${PIHOLE_VERSION}
+    restart: unless-stopped
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+    environment:
+      TZ: ${PIHOLE_TIMEZONE}
+      WEBPASSWORD: ${PIHOLE_WEB_PASSWORD}
+       # The DNS to forward requests on to if pihole can't resolve
+       # TODO: Add fallback DNS servers
+      PIHOLE_DNS_: 1.1.1.1
+      ServerIP: ${PIHOLE_SERVER_IP}
+    volumes:
+      - './volumes/pihole/etc-pihole/:/etc/pihole/'
+      - './volumes/pihole/etc-dnsmasq.d/:/etc/dnsmasq.d/'
+    cap_add:
+      - NET_ADMIN
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pihole.rule=Host(`${PIHOLE_DOMAIN}`)"
+      - "traefik.http.services.pihole.loadbalancer.server.port=80"
+      - "traefik.http.routers.pihole.entrypoints=web"
+
+  traefik:
+    container_name: traefik
+    image: traefik:${TRAEFIK_VERSION}
+    restart: unless-stopped
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true # DISABLE BEFORE DEPLOY 
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --providers.docker
+      - --log.level=ERROR
+      - --certificatesresolvers.leresolver.acme.httpchallenge=true
+      - --certificatesresolvers.leresolver.acme.email=${TRAEFIK_SSL_EMAIL}
+      - --certificatesresolvers.leresolver.acme.storage=/acme.json
+      - --certificatesresolvers.leresolver.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    labels:
+      - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      # - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+      # - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+  mariadb:
+    image: mariadb:${MARIADB_VERSION}
+    container_name: mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+    volumes:
+      - ./config/mariadb/:/docker-entrypoint-initdb.d/:ro
+      - mariadb:/var/lib/mysql
+    labels:
+      - "traefik.enable=false"
+
+  owncloud:
+    image: owncloud/server:${OWNCLOUD_VERSION}
+    container_name: owncloud
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+    environment:
+      OWNCLOUD_DOMAIN: ${OWNCLOUD_DOMAIN}
+      HTTP_PORT: 8080
+      OWNCLOUD_DB_TYPE: mysql
+      OWNCLOUD_DB_NAME: owncloud
+      # TODO: Use owncloud specific user
+      OWNCLOUD_DB_USERNAME: root
+      OWNCLOUD_DB_PASSWORD: root
+      OWNCLOUD_DB_HOST: mariadb
+      OWNCLOUD_ADMIN_USERNAME: ${OWNCLOUD_ADMIN_USERNAME}
+      OWNCLOUD_ADMIN_PASSWORD: ${OWNCLOUD_ADMIN_PASSWORD}
+      OWNCLOUD_MYSQL_UTF8MB4: 1
+    volumes:
+      - owncloud:/mnt/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.owncloud.rule=Host(`${OWNCLOUD_DOMAIN}`)"
+      - "traefik.http.services.owncloud.loadbalancer.server.port=8080"
+      - "traefik.http.routers.owncloud.entrypoints=web"
